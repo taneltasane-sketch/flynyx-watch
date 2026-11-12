@@ -246,6 +246,23 @@ def parse_flights(text):
     return flights
 
 
+def pick_airport(page, kind, code):
+    ok = page.evaluate(
+        """async ([kind, code]) => {
+            const sleep = ms => new Promise(r => setTimeout(r, ms));
+            document.getElementById(kind).click();
+            for (let i = 0; i < 24; i++) {
+                const li = [...document.querySelectorAll('ul[class*="_' + kind + '"] li')]
+                    .find(l => l.textContent.includes('(' + code + ')'));
+                if (li) { li.click(); await sleep(700); return true; }
+                await sleep(250);
+            }
+            return false;
+        }""", [kind, code])
+    if not ok:
+        raise RuntimeError(f"airport {code} not selectable in {kind} list")
+
+
 def do_search(page, frm, to, date):
     page.goto(URL, wait_until="domcontentloaded", timeout=45000)
     try:
@@ -257,8 +274,8 @@ def do_search(page, frm, to, date):
     except Exception:
         pass
     page.get_by_placeholder("Departure").click()
-    page.locator("ul.airport-wrapper li:visible").filter(has_text=re.compile(rf"\({frm}\)")).first.click()
-    page.locator("ul.airport-wrapper li:visible").filter(has_text=re.compile(rf"\({to}\)")).first.click()
+    pick_airport(page, "origin", frm)
+    pick_airport(page, "destination", to)
     page.wait_for_timeout(600)
     page.evaluate(
         """(d) => {
