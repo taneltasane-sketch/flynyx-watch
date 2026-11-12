@@ -287,7 +287,11 @@ def do_search(page, frm, to, date):
             el.dispatchEvent(new Event('change', {bubbles: true}));
         }""", date)
     page.get_by_role("button", name=re.compile(r"^\s*search\s*$", re.I)).first.click()
-    page.wait_for_selector("text=OUTBOUND FLIGHT", timeout=45000)
+    try:
+        page.wait_for_selector("text=OUTBOUND FLIGHT", timeout=30000)
+    except Exception:
+        snap = re.sub(r"\s+", " ", page.inner_text("body"))[:500]
+        raise RuntimeError(f"no results; url={page.url} title={page.title()!r} body={snap}")
     page.wait_for_timeout(2500)
     head = re.sub(r"\s+", " ", page.inner_text("body"))[:700]
     if date not in head:
