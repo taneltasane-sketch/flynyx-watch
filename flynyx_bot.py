@@ -89,15 +89,26 @@ def save_state(state):
 
 
 # ---------------------------------------------------------------- telegram
-def tg_send(text):
+def tg_send(text, markup=None):
     if not (TG_TOKEN and TG_CHAT):
         log("TG not configured: " + text)
         return
+    data = {"chat_id": TG_CHAT, "text": text}
+    if markup:
+        data["reply_markup"] = json.dumps(markup)
     try:
         requests.post(f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage",
-                      data={"chat_id": TG_CHAT, "text": text}, timeout=20)
+                      data=data, timeout=20)
     except Exception as e:
         log(f"telegram send error: {e}")
+
+
+def tg_answer(cb_id):
+    try:
+        requests.post(f"https://api.telegram.org/bot{TG_TOKEN}/answerCallbackQuery",
+                      data={"callback_query_id": cb_id}, timeout=10)
+    except Exception as e:
+        log(f"telegram answer error: {e}")
 
 
 def tg_updates(offset, timeout):
@@ -152,13 +163,154 @@ def describe(w):
             f"{w['date']}" + (f" kell {w['time']}" if w.get("time") else " (kõik lennud)"))
 
 
+WIZ = {}
+FETCH = None
+WD = ["Esm", "Tei", "Kolm", "Nel", "Reede", "Laup", "Püh"]
+MENU = {"keyboard": [["➕ Lisa jälgimine"], ["📋 Minu jälgimised", "🔄 Kontrolli kohe"]],
+        "resize_keyboard": True, "is_persistent": True}
+
+
+def kb(rows):
+    return {"inline_keyboard": [[{"text": a, "callback_data": b} for a, b in row] for row in rows]}
+
+
+def parse_date(text):
+    low = text.lower()
+    today = dt.date.today()
+    try:
+        m = re.search(r"(\d{4})-(\d{1,2})-(\d{1,2})", low)
+        if m:
+            d = dt.date(int(m[1]), int(m[2]), int(m[3]))
+        else:
+            m = re.search(r"(\d{1,2})\.(\d{1,2})(?:\.(\d{4}))?", low)
+            if not m:
+                return None
+            year = int(m[3]) if m[3] else today.year
+            d = dt.date(year, int(m[2]), int(m[1]))
+            if not m[3] and d < today:
+                d = d.replace(year=year + 1)
+    except ValueError:
+        return None
+    return d if d >= today else None
+
+
+def wiz_start():
+    WIZ.clear()
+    rows = [[(NAMES[c], "f:" + c)] for c in NAMES] + [[("✖ Tühista", "x:")]]
+    tg_send("Kust lendad?", kb(rows))
+    return False
+
+
+def show_list(state):
+    if not state["watches"]:
+        tg_send("Praegu ei jälgi midagi. Vajuta ➕ Lisa jälgimine.", MENU)
+        return
+    rows = [[(f"🗑 {describe(w)}", f"k:{w['id']}")] for w in state["watches"]]
+    tg_send("Jälgin (vajuta, et kustutada):", kb(rows))
+
+
+def wiz_date(iso):
+    WIZ["date"] = iso
+    WIZ.pop("await_date", None)
+    tg_send("Otsin sellel päeval lende, oota kuni minut…")
+    rows = []
+    try:
+        fl = FETCH(WIZ["from"], WIZ["to"], iso) if FETCH else []
+        for f in fl:
+            if f["origin"] == WIZ["from"]:
+                rows.append([(f"{f['time']}  " + ("✅ vaba" if f["open"] else "välja müüdud"), "h:" + f["time"])])
+    except Exception as e:
+        log(f"lookup failed: {e}")
+    if not rows:
+        tg_send("Lende ei leidnud (või leht ei vastanud). Saad jälgida kõiki selle päeva lende.")
+    rows.append([("Kõik selle päeva lennud", "h:all")])
+    rows.append([("✖ Tühista", "x:")])
+    tg_send("Vali lend:", kb(rows))
+    return False
+
+
+def handle_callback(data, state, status):
+    kind, _, val = data.partition(":")
+    if kind == "x":
+        WIZ.clear()
+        tg_send("Tühistatud.", MENU)
+        return False
+    if kind == "f":
+        WIZ.clear()
+        WIZ["from"] = val
+        rows = [[(NAMES[c], "t:" + c)] for c in NAMES if c != val] + [[("✖ Tühista", "x:")]]
+        tg_send("Kuhu lendad?", kb(rows))
+        return False
+    if kind == "t":
+        if "from" not in WIZ:
+            return False
+        WIZ["to"] = val
+        today = dt.date.today()
+        btns = []
+        for i in range(12):
+            d = today + dt.timedelta(days=i)
+            lab = ("Täna" if i == 0 else "Homme" if i == 1 else WD[d.weekday()]) + f" {d.day}.{d.month:02d}"
+            btns.append((lab, "d:" + d.isoformat()))
+        rows = [btns[i:i + 3] for i in range(0, 12, 3)]
+        rows += [[("✍️ Muu kuupäev", "d:other")], [("✖ Tühista", "x:")]]
+        tg_send("Mis päeval?", kb(rows))
+        return False
+    if kind == "d":
+        if "to" not in WIZ:
+            return False
+        if val == "other":
+            WIZ["await_date"] = True
+            tg_send("Kirjuta kuupäev, nt 15.11 või 2026-12-03")
+            return False
+        return wiz_date(val)
+    if kind == "h":
+        if "date" not in WIZ:
+            return False
+        w = {"from": WIZ["from"], "to": WIZ["to"], "date": WIZ["date"], "time": None if val == "all" else val}
+        WIZ.clear()
+        for x in state["watches"]:
+            if all(x.get(k) == w[k] for k in ("from", "to", "date", "time")):
+                tg_send(f"Juba jälgin: #{x['id']} {describe(x)}", MENU)
+                return False
+        w["id"] = state["next_id"]
+        state["next_id"] += 1
+        state["watches"].append(w)
+        save_state(state)
+        tg_send(f"✅ Lisatud #{w['id']}: {describe(w)}", MENU)
+        return True
+    if kind == "k":
+        n = int(val)
+        before = len(state["watches"])
+        state["watches"] = [w for w in state["watches"] if w["id"] != n]
+        if len(state["watches"]) < before:
+            save_state(state)
+            tg_send(f"🗑 Kustutatud #{n}", MENU)
+        else:
+            tg_send("Seda juba pole.", MENU)
+        return False
+    return False
+
+
 def handle_message(text, state, status):
     """Returns True if the watch list changed (so checks should run right away)."""
     text = text.strip()
+    if text.startswith("➕"):
+        return wiz_start()
+    if text.startswith("📋"):
+        show_list(state)
+        return False
+    if text.startswith("🔄"):
+        text = "/kontrolli"
+    if WIZ.get("await_date") and not text.startswith("/"):
+        d = parse_date(text)
+        if not d:
+            tg_send("Ei saanud kuupäevast aru. Näide: 15.11")
+            return False
+        return wiz_date(d.isoformat())
     cmd, _, rest = text.partition(" ")
     cmd = cmd.lstrip("/").split("@")[0].lower()
     if cmd in ("start", "abi", "help"):
-        tg_send("Tere! Ma jälgin NyxAiri lende ja annan teada, kui koht vabaneb.\n\n" + HELP)
+        tg_send("Tere! Ma jälgin NyxAiri lende ja annan teada, kui koht vabaneb. Kasuta all olevaid nuppe 👇", MENU)
     elif cmd == "lisa":
         w = parse_add(rest)
         if isinstance(w, str):
@@ -196,7 +348,7 @@ def handle_message(text, state, status):
             tg_send("\n".join(f"#{w['id']} {describe(w)}: {status.get(w['id'], 'pole veel kontrollitud')}"
                               for w in state["watches"]))
     else:
-        tg_send("Ei saanud aru.\n\n" + HELP)
+        tg_send("Vajuta all olevaid nuppe 👇", MENU)
     return False
 
 
@@ -206,6 +358,17 @@ def process_updates(state, status, timeout):
     if updates:
         for u in updates:
             state["offset"] = u["update_id"] + 1
+            cq = u.get("callback_query")
+            if cq:
+                tg_answer(cq["id"])
+                cchat = str(((cq.get("message") or {}).get("chat") or {}).get("id", ""))
+                if cchat == TG_CHAT:
+                    try:
+                        changed |= bool(handle_callback(cq.get("data", ""), state, status))
+                    except Exception as e:
+                        log(f"callback error: {e}")
+                        tg_send(f"Viga: {str(e)[:120]}")
+                continue
             msg = u.get("message") or {}
             chat = str((msg.get("chat") or {}).get("id", ""))
             if chat != TG_CHAT or not msg.get("text"):
@@ -365,7 +528,7 @@ def check_all(page, ctx, state, status):
             log(f"#{w['id']} {describe(w)} -> {status[w['id']]}")
             if open_now and not was_open:
                 lines = ", ".join(f"{f['no']} {f['time']}" for f in open_now)
-                tg_send(f"🛫 KOHT VABANES! #{w['id']} {describe(w)}\n{lines}\nMine kohe: {URL}")
+                tg_send(f"🛫 KOHT VABANES! #{w['id']} {describe(w)}\n{lines}\nMine kohe: {URL}", {"inline_keyboard": [[{"text": "✈️ Mine broneerima", "url": URL}]]})
 
 
 # ---------------------------------------------------------------- main
@@ -381,6 +544,7 @@ def main():
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
         page = browser.new_context(viewport={"width": 1600, "height": 900}, locale="en-GB").new_page()
+        globals()["FETCH"] = lambda f, t, d: get_flights(page, ctx, f, t, d)
         while True:
             if MAX_SECONDS and time.time() - START > MAX_SECONDS:
                 log("max runtime reached, exiting")
