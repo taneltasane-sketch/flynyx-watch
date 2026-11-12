@@ -277,15 +277,27 @@ def do_search(page, frm, to, date):
     pick_airport(page, "origin", frm)
     pick_airport(page, "destination", to)
     page.wait_for_timeout(600)
-    page.evaluate(
-        """(d) => {
-            const f = document.getElementById('tripsearch_form');
-            f.querySelectorAll('input[name=traveltype]').forEach(x => x.checked = (x.value === 'oneway'));
-            const el = f.querySelector('[name=departdate]');
-            el.value = d;
-            el.dispatchEvent(new Event('input', {bubbles: true}));
-            el.dispatchEvent(new Event('change', {bubbles: true}));
-        }""", date)
+    page.evaluate("""() => { const r = document.getElementById('traveltype-one-way'); if (r) r.click(); }""")
+    page.wait_for_timeout(500)
+    ok = page.evaluate(
+        """async ([y, m, d]) => {
+            const sleep = ms => new Promise(r => setTimeout(r, ms));
+            document.getElementById('departdate').click();
+            await sleep(600);
+            for (let i = 0; i < 14; i++) {
+                const a = [...document.querySelectorAll(
+                    'td[data-handler="selectDay"][data-year="' + y + '"][data-month="' + (m - 1) + '"] a')]
+                    .find(x => x.textContent.trim() === String(d));
+                if (a) { a.click(); await sleep(600); return true; }
+                const n = document.querySelector('.ui-datepicker-next');
+                if (!n) break;
+                n.click();
+                await sleep(300);
+            }
+            return false;
+        }""", [int(date[:4]), int(date[5:7]), int(date[8:10])])
+    if not ok:
+        raise RuntimeError(f"date {date} not selectable in calendar")
     page.get_by_role("button", name=re.compile(r"^\s*search\s*$", re.I)).first.click()
     try:
         page.wait_for_selector("text=OUTBOUND FLIGHT", timeout=30000)
