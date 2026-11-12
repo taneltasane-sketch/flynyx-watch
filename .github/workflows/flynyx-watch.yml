@@ -1,0 +1,40 @@
+name: flynyx-watch
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 */6 * * *"   # backup restart every 6h
+
+permissions:
+  contents: write   # lets the bot save the watch list (watches.json)
+  actions: write    # lets a finished run start the next one
+
+concurrency:
+  group: flynyx-watch
+  cancel-in-progress: false
+
+jobs:
+  watch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: |
+          pip install playwright requests
+          playwright install --with-deps chromium
+      - name: Run watcher (about 5h40m, then exits cleanly)
+        run: python3 flynyx_bot.py
+        env:
+          TG_TOKEN: ${{ secrets.TG_TOKEN }}
+          TG_CHAT: ${{ secrets.TG_CHAT }}
+          INTERVAL: "60"
+          MAX_SECONDS: "20400"
+          NO_START_MSG: "1"
+      - name: Start the next run so there is no gap
+        if: always()
+        run: gh workflow run flynyx-watch.yml
+        env:
+          GH_TOKEN: ${{ github.token }}
