@@ -257,8 +257,8 @@ def do_search(page, frm, to, date):
     except Exception:
         pass
     page.get_by_placeholder("Departure").click()
-    page.get_by_text(re.compile(rf"\({frm}\)")).locator("visible=true").first.click()
-    page.get_by_text(re.compile(rf"\({to}\)")).locator("visible=true").first.click()
+    page.locator("ul.airport-wrapper li:visible").filter(has_text=re.compile(rf"\({frm}\)")).first.click()
+    page.locator("ul.airport-wrapper li:visible").filter(has_text=re.compile(rf"\({to}\)")).first.click()
     page.wait_for_timeout(600)
     page.evaluate(
         """(d) => {
