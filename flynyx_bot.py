@@ -468,9 +468,9 @@ def do_search(page, frm, to, date):
         snap = re.sub(r"\s+", " ", page.inner_text("body"))[:500]
         raise RuntimeError(f"no results; url={page.url} title={page.title()!r} body={snap}")
     page.wait_for_timeout(2500)
-    head = re.sub(r"\s+", " ", page.inner_text("body"))[:700]
-    if date not in head:
-        raise RuntimeError(f"date {date} was not applied (page header: {head[:160]})")
+    got = page.input_value("#departdate")
+    if got != date:
+        raise RuntimeError(f"date {date} was not applied (field shows {got!r})")
 
 
 def refresh_view(page, date):
